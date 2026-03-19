@@ -42,11 +42,10 @@ return `<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>GPS Tracker</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:'Roboto',sans-serif; height:100vh; overflow:hidden; background:#e8eaed; }
+  body { font-family:'Roboto',sans-serif; height:100vh; overflow:hidden; }
 
   #map { position:absolute; inset:0; z-index:0; }
 
@@ -83,7 +82,7 @@ return `<!DOCTYPE html>
 
   /* Recenter FAB */
   .recenter-btn {
-    position:absolute; right:16px; bottom:160px; z-index:1000;
+    position:absolute; right:56px; bottom:160px; z-index:1000;
     width:40px; height:40px; background:#fff; border:none; border-radius:4px;
     box-shadow:0 2px 6px rgba(0,0,0,0.3); cursor:pointer;
     display:flex; align-items:center; justify-content:center; transition:background .15s;
@@ -129,18 +128,11 @@ return `<!DOCTYPE html>
   @keyframes spin { to { transform:rotate(360deg); } }
   .wait-title { font-family:'Google Sans',sans-serif; font-size:14px; color:#202124; }
   .wait-sub   { font-size:12px; color:#5f6368; margin-top:3px; }
-
-  /* Leaflet overrides */
-  .leaflet-control-zoom { border:none !important; box-shadow:0 2px 6px rgba(0,0,0,0.25) !important; border-radius:4px !important; }
-  .leaflet-control-zoom a { background:#fff !important; color:#5f6368 !important; border:none !important; width:40px !important; height:40px !important; line-height:40px !important; font-size:18px !important; }
-  .leaflet-control-zoom a:hover { background:#f1f3f4 !important; }
-  .leaflet-control-zoom-in  { border-radius:4px 4px 0 0 !important; }
-  .leaflet-control-zoom-out { border-radius:0 0 4px 4px !important; }
-  .leaflet-control-attribution { display:none; }
 </style>
 </head>
 <body>
 
+<!-- Top bar -->
 <div class="top-bar">
   <div class="search-box">
     <svg width="20" height="20" viewBox="0 0 24 24">
@@ -154,16 +146,20 @@ return `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Timestamp pill -->
 <div class="update-pill" id="pill"></div>
 
+<!-- Map -->
 <div id="map"></div>
 
+<!-- Recenter button -->
 <button class="recenter-btn" id="recenter" title="Re-center">
   <svg width="20" height="20" viewBox="0 0 24 24">
     <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z" fill="#5f6368"/>
   </svg>
 </button>
 
+<!-- Info card (shown when fix received) -->
 <div class="info-card" id="info-card">
   <div class="info-header">
     <div class="loc-icon">
@@ -196,6 +192,7 @@ return `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Waiting card -->
 <div class="waiting-card" id="waiting-card">
   <div class="spinner"></div>
   <div>
@@ -204,74 +201,110 @@ return `<!DOCTYPE html>
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-  const map = L.map('map', { zoomControl:true, attributionControl:false }).setView([0,0], 2);
-  map.zoomControl.setPosition('bottomright');
+  let map, marker, trailPolyline, hasZoomed = false, currentPos = null;
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    maxZoom:19, subdomains:'abcd'
-  }).addTo(map);
+  function initMap() {
+    map = new google.maps.Map(document.getElementById('map'), {
+      center: { lat: 0, lng: 0 },
+      zoom: 2,
+      mapId: 'gps_tracker',
+      disableDefaultUI: true,        // Remove all default controls
+      zoomControl: true,             // Re-add just zoom
+      zoomControlOptions: {
+        position: google.maps.ControlPosition.RIGHT_BOTTOM
+      },
+      gestureHandling: 'greedy',
+      clickableIcons: false
+    });
 
-  const dotIcon = L.divIcon({
-    className: '',
-    html: \`<div style="position:relative;width:24px;height:24px">
-      <div style="position:absolute;inset:0;border-radius:50%;background:rgba(26,115,232,0.18);animation:rp 2s infinite"></div>
-      <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;background:#1a73e8;border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.3)"></div>
-    </div>
-    <style>@keyframes rp{0%{transform:scale(.8);opacity:.8}100%{transform:scale(2.4);opacity:0}}</style>\`,
-    iconSize:[24,24], iconAnchor:[12,12]
-  });
+    // Recenter button
+    document.getElementById('recenter').addEventListener('click', () => {
+      if (currentPos) map.panTo(currentPos);
+    });
 
-  let marker=null, trailLine=null, hasZoomed=false, currentPos=null;
-
-  document.getElementById('recenter').addEventListener('click', () => {
-    if (currentPos) map.setView([currentPos.lat, currentPos.lng], 17);
-  });
+    fetchLocation();
+    setInterval(fetchLocation, 3000);
+  }
 
   async function fetchLocation() {
     try {
-      const { location:loc, trail } = await fetch('/api/location').then(r=>r.json());
+      const { location: loc, trail } = await fetch('/api/location').then(r => r.json());
       if (!loc) return;
-      currentPos = loc;
 
-      if (!marker) marker = L.marker([loc.lat,loc.lng],{icon:dotIcon}).addTo(map);
-      else marker.setLatLng([loc.lat,loc.lng]);
+      currentPos = { lat: loc.lat, lng: loc.lng };
 
-      if (trailLine) map.removeLayer(trailLine);
-      if (trail.length > 1) {
-        trailLine = L.polyline(trail.map(p=>[p.lat,p.lng]), {
-          color:'#1a73e8', weight:4, opacity:0.75, lineJoin:'round', lineCap:'round'
-        }).addTo(map);
+      // ── Marker (Google Maps blue dot style) ──
+      if (!marker) {
+        marker = new google.maps.Marker({
+          position: currentPos,
+          map,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 10,
+            fillColor: '#1a73e8',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 2.5
+          },
+          title: 'ESP32 Location',
+          zIndex: 999
+        });
+      } else {
+        marker.setPosition(currentPos);
       }
 
-      if (!hasZoomed) { map.setView([loc.lat,loc.lng],17); hasZoomed=true; }
+      // ── Trail polyline ──
+      const trailPath = trail.map(p => ({ lat: p.lat, lng: p.lng }));
+      if (trailPolyline) {
+        trailPolyline.setPath(trailPath);
+      } else if (trailPath.length > 1) {
+        trailPolyline = new google.maps.Polyline({
+          path: trailPath,
+          geodesic: true,
+          strokeColor: '#1a73e8',
+          strokeOpacity: 0.8,
+          strokeWeight: 4,
+          map
+        });
+      }
 
-      document.getElementById('coords').textContent   = loc.lat.toFixed(6)+', '+loc.lng.toFixed(6);
+      // ── Auto-zoom on first fix ──
+      if (!hasZoomed) {
+        map.setCenter(currentPos);
+        map.setZoom(17);
+        hasZoomed = true;
+      }
+
+      // ── Update UI ──
+      document.getElementById('coords').textContent   = loc.lat.toFixed(6) + ', ' + loc.lng.toFixed(6);
       document.getElementById('s-speed').textContent  = loc.speed.toFixed(1);
       document.getElementById('s-alt').textContent    = loc.alt.toFixed(0);
       document.getElementById('s-sats').textContent   = loc.sats;
 
       document.getElementById('info-card').style.display    = 'flex';
       document.getElementById('waiting-card').style.display = 'none';
-      document.getElementById('badge').className = 'live-badge';
-      document.getElementById('dot').className   = 'live-dot';
-      document.getElementById('badge-text').textContent = 'Live';
+      document.getElementById('badge').className            = 'live-badge';
+      document.getElementById('dot').className              = 'live-dot';
+      document.getElementById('badge-text').textContent     = 'Live';
 
       const pill = document.getElementById('pill');
       pill.style.display = 'block';
-      pill.textContent = 'Updated ' + new Date(loc.time).toLocaleTimeString();
+      pill.textContent   = 'Updated ' + new Date(loc.time).toLocaleTimeString();
 
-    } catch(e) {
-      document.getElementById('badge').className = 'live-badge waiting';
-      document.getElementById('dot').className   = 'live-dot waiting';
+    } catch (e) {
+      document.getElementById('badge').className        = 'live-badge waiting';
+      document.getElementById('dot').className          = 'live-dot waiting';
       document.getElementById('badge-text').textContent = 'Offline';
     }
   }
-
-  fetchLocation();
-  setInterval(fetchLocation, 3000);
 </script>
+
+<!-- Load real Google Maps -->
+<script async
+  src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDUFtPg_U7UrD4kr0qiKLrZ5-_ADOdsedk&callback=initMap">
+</script>
+
 </body>
 </html>`;
 }
