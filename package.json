@@ -1,0 +1,12 @@
+{
+  "name": "gps-tracker-server",
+  "version": "1.0.0",
+  "description": "Live GPS tracker server for ESP32",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
