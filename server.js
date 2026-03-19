@@ -4,27 +4,15 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Stores the latest GPS reading from the ESP32
 let latestLocation = null;
-let locationHistory = []; // Keep last 100 points for trail
+let locationHistory = [];
 
 // ─── ESP32 → Server ───────────────────────────────────────
 app.post('/location', (req, res) => {
   const { lat, lng, alt, speed, sats } = req.body;
+  if (lat == null || lng == null) return res.status(400).json({ error: 'lat and lng required' });
 
-  if (lat == null || lng == null) {
-    return res.status(400).json({ error: 'lat and lng required' });
-  }
-
-  latestLocation = {
-    lat, lng,
-    alt:   alt   ?? 0,
-    speed: speed ?? 0,
-    sats:  sats  ?? 0,
-    time:  new Date().toISOString()
-  };
-
-  // Keep a rolling trail (last 100 points)
+  latestLocation = { lat, lng, alt: alt ?? 0, speed: speed ?? 0, sats: sats ?? 0, time: new Date().toISOString() };
   locationHistory.push({ lat, lng });
   if (locationHistory.length > 100) locationHistory.shift();
 
@@ -38,292 +26,246 @@ app.get('/api/location', (req, res) => {
 });
 
 // ─── Serve the map page ───────────────────────────────────
-app.get('/', (req, res) => {
-  res.send(getMapHTML());
-});
+app.get('/', (req, res) => res.send(getMapHTML()));
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🛰  GPS Tracker Server running`);
-  console.log(`   Map:    http://localhost:${PORT}`);
-  console.log(`   API:    POST http://YOUR_IP:${PORT}/location`);
-  console.log(`\n   Set SERVER_URL in your .ino to: http://YOUR_IP:${PORT}/location\n`);
+  console.log(`\n GPS Tracker Server running`);
+  console.log(`   Map : http://localhost:${PORT}`);
+  console.log(`   POST: http://YOUR_IP:${PORT}/location\n`);
 });
 
-// ─── Map HTML (self-contained, served inline) ─────────────
+// ─── Map HTML ─────────────────────────────────────────────
 function getMapHTML() {
-  return `<!DOCTYPE html>
+return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>GPS Tracker</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg: #0a0c10;
-    --panel: #111318;
-    --border: #1e2230;
-    --accent: #00e5ff;
-    --accent2: #7c3aed;
-    --text: #e2e8f0;
-    --muted: #64748b;
-    --green: #10b981;
-    --red: #ef4444;
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Roboto',sans-serif; height:100vh; overflow:hidden; background:#e8eaed; }
+
+  #map { position:absolute; inset:0; z-index:0; }
+
+  /* Top search bar */
+  .top-bar {
+    position:absolute; top:16px; left:50%; transform:translateX(-50%); z-index:1000;
+  }
+  .search-box {
+    display:flex; align-items:center; gap:12px;
+    background:#fff; border-radius:24px; padding:10px 20px 10px 16px;
+    box-shadow:0 2px 6px rgba(0,0,0,0.25),0 0 0 1px rgba(0,0,0,0.05);
+    min-width:340px;
+  }
+  .search-title {
+    font-family:'Google Sans',sans-serif; font-size:16px; font-weight:500; color:#202124; flex:1;
+  }
+  .live-badge {
+    display:flex; align-items:center; gap:5px;
+    background:#e6f4ea; color:#1e8e3e;
+    font-size:11px; font-weight:500; padding:4px 10px; border-radius:12px;
+  }
+  .live-badge.waiting { background:#fce8e6; color:#d93025; }
+  .live-dot { width:7px; height:7px; border-radius:50%; background:#1e8e3e; animation:blink 1.5s infinite; }
+  .live-dot.waiting  { background:#d93025; animation:none; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* Timestamp pill */
+  .update-pill {
+    position:absolute; top:70px; left:50%; transform:translateX(-50%); z-index:1000;
+    background:rgba(255,255,255,0.95); border-radius:20px; padding:5px 14px;
+    font-size:11px; color:#5f6368; box-shadow:0 1px 4px rgba(0,0,0,0.15);
+    white-space:nowrap; display:none;
   }
 
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'DM Sans', sans-serif;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+  /* Recenter FAB */
+  .recenter-btn {
+    position:absolute; right:16px; bottom:160px; z-index:1000;
+    width:40px; height:40px; background:#fff; border:none; border-radius:4px;
+    box-shadow:0 2px 6px rgba(0,0,0,0.3); cursor:pointer;
+    display:flex; align-items:center; justify-content:center; transition:background .15s;
   }
+  .recenter-btn:hover { background:#f1f3f4; }
 
-  header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 14px 24px;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel);
-    z-index: 100;
+  /* Bottom info card */
+  .info-card {
+    position:absolute; bottom:24px; left:50%; transform:translateX(-50%); z-index:1000;
+    background:#fff; border-radius:16px;
+    box-shadow:0 4px 16px rgba(0,0,0,0.2),0 1px 4px rgba(0,0,0,0.1);
+    padding:16px 24px; min-width:420px;
+    display:none; flex-direction:column; gap:14px;
   }
-
-  .logo {
-    font-family: 'Space Mono', monospace;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.15em;
-    color: var(--accent);
-    text-transform: uppercase;
+  .info-header { display:flex; align-items:center; gap:14px; }
+  .loc-icon {
+    width:42px; height:42px; border-radius:50%; background:#1a73e8;
+    display:flex; align-items:center; justify-content:center; flex-shrink:0;
   }
-
-  .pulse-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--green);
-    box-shadow: 0 0 0 0 rgba(16,185,129,0.5);
-    animation: pulse 2s infinite;
+  .info-title { font-family:'Google Sans',sans-serif; font-size:15px; font-weight:500; color:#202124; }
+  .info-coords { font-size:12px; color:#5f6368; margin-top:3px; font-family:monospace; }
+  .divider { height:1px; background:#e8eaed; }
+  .stats { display:flex; }
+  .stat {
+    flex:1; display:flex; flex-direction:column; align-items:center; gap:2px;
+    padding:4px 0; border-right:1px solid #e8eaed;
   }
-  .pulse-dot.offline { background: var(--red); animation: none; box-shadow: none; }
+  .stat:last-child { border-right:none; }
+  .stat-val { font-family:'Google Sans',sans-serif; font-size:22px; font-weight:500; color:#202124; line-height:1; }
+  .stat-unit { font-size:10px; color:#80868b; }
+  .stat-lbl  { font-size:11px; color:#5f6368; text-transform:uppercase; letter-spacing:.4px; }
 
-  @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(16,185,129,0.6); }
-    70%  { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
-    100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+  /* Waiting card */
+  .waiting-card {
+    position:absolute; bottom:24px; left:50%; transform:translateX(-50%); z-index:1000;
+    background:#fff; border-radius:16px; box-shadow:0 4px 16px rgba(0,0,0,0.2);
+    padding:20px 28px; display:flex; align-items:center; gap:16px; min-width:320px;
   }
-
-  #status-text {
-    font-family: 'Space Mono', monospace;
-    font-size: 11px;
-    color: var(--muted);
-    margin-left: auto;
+  .spinner {
+    width:26px; height:26px; border:3px solid #e8eaed; border-top-color:#1a73e8;
+    border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0;
   }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .wait-title { font-family:'Google Sans',sans-serif; font-size:14px; color:#202124; }
+  .wait-sub   { font-size:12px; color:#5f6368; margin-top:3px; }
 
-  .layout {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-  }
-
-  #map { flex: 1; }
-
-  .sidebar {
-    width: 240px;
-    background: var(--panel);
-    border-left: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    overflow-y: auto;
-  }
-
-  .card {
-    padding: 20px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .card-label {
-    font-family: 'Space Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 8px;
-  }
-
-  .card-value {
-    font-family: 'Space Mono', monospace;
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--accent);
-    line-height: 1;
-  }
-
-  .card-unit {
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 4px;
-    font-family: 'DM Sans', sans-serif;
-    font-weight: 300;
-  }
-
-  .coords {
-    font-family: 'Space Mono', monospace;
-    font-size: 11px;
-    color: var(--text);
-    line-height: 1.8;
-  }
-
-  .no-fix {
-    padding: 20px;
-    text-align: center;
-    color: var(--muted);
-    font-family: 'Space Mono', monospace;
-    font-size: 11px;
-    line-height: 1.8;
-  }
-
-  #timestamp {
-    padding: 16px 20px;
-    font-family: 'Space Mono', monospace;
-    font-size: 9px;
-    color: var(--muted);
-    margin-top: auto;
-    letter-spacing: 0.05em;
-    border-top: 1px solid var(--border);
-  }
-
-  /* Leaflet dark overrides */
-  .leaflet-tile-pane { filter: brightness(0.85) saturate(0.7) hue-rotate(180deg) invert(1); }
-  .leaflet-container { background: #0a0c10; }
-  .leaflet-control-zoom a {
-    background: var(--panel) !important;
-    color: var(--text) !important;
-    border-color: var(--border) !important;
-  }
-  .leaflet-control-attribution { display: none; }
+  /* Leaflet overrides */
+  .leaflet-control-zoom { border:none !important; box-shadow:0 2px 6px rgba(0,0,0,0.25) !important; border-radius:4px !important; }
+  .leaflet-control-zoom a { background:#fff !important; color:#5f6368 !important; border:none !important; width:40px !important; height:40px !important; line-height:40px !important; font-size:18px !important; }
+  .leaflet-control-zoom a:hover { background:#f1f3f4 !important; }
+  .leaflet-control-zoom-in  { border-radius:4px 4px 0 0 !important; }
+  .leaflet-control-zoom-out { border-radius:0 0 4px 4px !important; }
+  .leaflet-control-attribution { display:none; }
 </style>
 </head>
 <body>
 
-<header>
-  <div class="pulse-dot" id="pulse"></div>
-  <span class="logo">GPS Tracker</span>
-  <span id="status-text">WAITING FOR DEVICE…</span>
-</header>
-
-<div class="layout">
-  <div id="map"></div>
-  <div class="sidebar">
-    <div id="sidebar-content">
-      <div class="no-fix">
-        📡<br><br>
-        Awaiting<br>GPS fix…<br><br>
-        <span style="color:#334155;font-size:9px">Make sure your ESP32<br>is running and connected</span>
-      </div>
+<div class="top-bar">
+  <div class="search-box">
+    <svg width="20" height="20" viewBox="0 0 24 24">
+      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#1a73e8"/>
+    </svg>
+    <span class="search-title">Live GPS Tracker</span>
+    <div class="live-badge waiting" id="badge">
+      <div class="live-dot waiting" id="dot"></div>
+      <span id="badge-text">Waiting…</span>
     </div>
-    <div id="timestamp">—</div>
+  </div>
+</div>
+
+<div class="update-pill" id="pill"></div>
+
+<div id="map"></div>
+
+<button class="recenter-btn" id="recenter" title="Re-center">
+  <svg width="20" height="20" viewBox="0 0 24 24">
+    <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z" fill="#5f6368"/>
+  </svg>
+</button>
+
+<div class="info-card" id="info-card">
+  <div class="info-header">
+    <div class="loc-icon">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+      </svg>
+    </div>
+    <div>
+      <div class="info-title">Current Location</div>
+      <div class="info-coords" id="coords">—</div>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-val" id="s-speed">—</div>
+      <div class="stat-unit">km/h</div>
+      <div class="stat-lbl">Speed</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="s-alt">—</div>
+      <div class="stat-unit">m</div>
+      <div class="stat-lbl">Altitude</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="s-sats">—</div>
+      <div class="stat-unit">&nbsp;</div>
+      <div class="stat-lbl">Satellites</div>
+    </div>
+  </div>
+</div>
+
+<div class="waiting-card" id="waiting-card">
+  <div class="spinner"></div>
+  <div>
+    <div class="wait-title">Waiting for GPS signal…</div>
+    <div class="wait-sub">Make sure ESP32 is on and has sky view</div>
   </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-  const map = L.map('map', { zoomControl: true }).setView([0, 0], 2);
+  const map = L.map('map', { zoomControl:true, attributionControl:false }).setView([0,0], 2);
+  map.zoomControl.setPosition('bottomright');
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom:19, subdomains:'abcd'
   }).addTo(map);
 
-  // Custom marker icon
-  const icon = L.divIcon({
+  const dotIcon = L.divIcon({
     className: '',
-    html: \`<div style="
-      width:16px;height:16px;border-radius:50%;
-      background:#00e5ff;
-      border:3px solid #fff;
-      box-shadow:0 0 0 4px rgba(0,229,255,0.3), 0 0 20px rgba(0,229,255,0.6);
-    "></div>\`,
-    iconSize: [16, 16],
-    iconAnchor: [8, 8]
+    html: \`<div style="position:relative;width:24px;height:24px">
+      <div style="position:absolute;inset:0;border-radius:50%;background:rgba(26,115,232,0.18);animation:rp 2s infinite"></div>
+      <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;background:#1a73e8;border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.3)"></div>
+    </div>
+    <style>@keyframes rp{0%{transform:scale(.8);opacity:.8}100%{transform:scale(2.4);opacity:0}}</style>\`,
+    iconSize:[24,24], iconAnchor:[12,12]
   });
 
-  let marker = null;
-  let trailLine = null;
-  let hasZoomed = false;
+  let marker=null, trailLine=null, hasZoomed=false, currentPos=null;
+
+  document.getElementById('recenter').addEventListener('click', () => {
+    if (currentPos) map.setView([currentPos.lat, currentPos.lng], 17);
+  });
 
   async function fetchLocation() {
     try {
-      const res = await fetch('/api/location');
-      const data = await res.json();
-      const loc = data.location;
-      const trail = data.trail || [];
-
+      const { location:loc, trail } = await fetch('/api/location').then(r=>r.json());
       if (!loc) return;
+      currentPos = loc;
 
-      // Update marker
-      if (!marker) {
-        marker = L.marker([loc.lat, loc.lng], { icon }).addTo(map);
-      } else {
-        marker.setLatLng([loc.lat, loc.lng]);
-      }
+      if (!marker) marker = L.marker([loc.lat,loc.lng],{icon:dotIcon}).addTo(map);
+      else marker.setLatLng([loc.lat,loc.lng]);
 
-      // Draw trail
       if (trailLine) map.removeLayer(trailLine);
       if (trail.length > 1) {
-        trailLine = L.polyline(trail.map(p => [p.lat, p.lng]), {
-          color: '#7c3aed',
-          weight: 2,
-          opacity: 0.7,
-          dashArray: '4 4'
+        trailLine = L.polyline(trail.map(p=>[p.lat,p.lng]), {
+          color:'#1a73e8', weight:4, opacity:0.75, lineJoin:'round', lineCap:'round'
         }).addTo(map);
       }
 
-      // Auto-zoom first time
-      if (!hasZoomed) {
-        map.setView([loc.lat, loc.lng], 16);
-        hasZoomed = true;
-      }
+      if (!hasZoomed) { map.setView([loc.lat,loc.lng],17); hasZoomed=true; }
 
-      // Update sidebar
-      document.getElementById('sidebar-content').innerHTML = \`
-        <div class="card">
-          <div class="card-label">Coordinates</div>
-          <div class="coords">
-            <span style="color:var(--muted)">LAT</span> \${loc.lat.toFixed(6)}<br>
-            <span style="color:var(--muted)">LNG</span> \${loc.lng.toFixed(6)}
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-label">Speed</div>
-          <div class="card-value">\${loc.speed.toFixed(1)}</div>
-          <div class="card-unit">km/h</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Altitude</div>
-          <div class="card-value">\${loc.alt.toFixed(0)}</div>
-          <div class="card-unit">meters</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Satellites</div>
-          <div class="card-value">\${loc.sats}</div>
-          <div class="card-unit">in view</div>
-        </div>
-      \`;
+      document.getElementById('coords').textContent   = loc.lat.toFixed(6)+', '+loc.lng.toFixed(6);
+      document.getElementById('s-speed').textContent  = loc.speed.toFixed(1);
+      document.getElementById('s-alt').textContent    = loc.alt.toFixed(0);
+      document.getElementById('s-sats').textContent   = loc.sats;
 
-      document.getElementById('status-text').textContent = 'LIVE';
-      document.getElementById('pulse').classList.remove('offline');
-      document.getElementById('timestamp').textContent =
-        'LAST UPDATE  ' + new Date(loc.time).toLocaleTimeString();
+      document.getElementById('info-card').style.display    = 'flex';
+      document.getElementById('waiting-card').style.display = 'none';
+      document.getElementById('badge').className = 'live-badge';
+      document.getElementById('dot').className   = 'live-dot';
+      document.getElementById('badge-text').textContent = 'Live';
 
-    } catch (e) {
-      document.getElementById('status-text').textContent = 'SERVER OFFLINE';
-      document.getElementById('pulse').classList.add('offline');
+      const pill = document.getElementById('pill');
+      pill.style.display = 'block';
+      pill.textContent = 'Updated ' + new Date(loc.time).toLocaleTimeString();
+
+    } catch(e) {
+      document.getElementById('badge').className = 'live-badge waiting';
+      document.getElementById('dot').className   = 'live-dot waiting';
+      document.getElementById('badge-text').textContent = 'Offline';
     }
   }
 
